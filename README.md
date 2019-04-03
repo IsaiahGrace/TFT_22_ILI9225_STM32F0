@@ -3,9 +3,9 @@ TFT_22_ILI9225_STM32F0
 
 **This is a fork of the Arduino based ILI9225 driver intended to work with STM32F0 chips**
 
-This fork inpliments a software based implimentation of the SPI protocol because I haven't been able to get the SPI hardware module to work with the ILI9225. If you manage to figure it out, plese contact me or make a pull request!
+This fork implements a software based implementation of the SPI protocol because I haven't been able to get the SPI hardware module to work with the ILI9225. If you manage to figure it out, please contact me or make a pull request!
 
-# From the origional Arduino Library:
+# From the original Arduino Library:
 
 **v1.4.0, released 2019-02-17, Even more ESP32/8266 fixes** Credit: [Bolukan](https://github.com/Bolukan)
 
