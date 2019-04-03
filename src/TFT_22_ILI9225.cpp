@@ -1,32 +1,26 @@
+#include "stm32f0xx.h"
+//#include "stm32f0_discovery.h" // DOESN'T SEEM TO BE NEEDED
 #include "TFT_22_ILI9225.h"
 
-//#define DEBUG
-#ifdef DEBUG
+//#define DEBUG_PRINT
+#ifdef DEBUG_PRINT
+    // THis needs porting to the STM32F0. It will not work as is (I think).
     //#define DB_PRINT( x, ... ) { char dbgbuf[60]; sprintf_P( dbgbuf, (const char*) F( x ), __VA_ARGS__ ) ; Serial.print( dbgbuf ); }
     #define DB_PRINT( ... ) { char dbgbuf[60]; sprintf( dbgbuf,   __VA_ARGS__ ) ; Serial.println( dbgbuf ); }
-    
 #else
     #define DB_PRINT(  ... ) ;
 #endif
 
-
-
-#ifndef ARDUINO_STM32_FEATHER
-    #include "pins_arduino.h"
-    #ifndef RASPI
-        #include "wiring_private.h"
-    #endif
-#endif
-#include <limits.h>
-#ifdef __AVR__
-  #include <avr/pgmspace.h>
-#elif defined(ESP8266) || defined(ESP32)
-  #include <pgmspace.h>
-#endif
-
-// Many (but maybe not all) non-AVR board installs define macros
-// for compatibility with existing PROGMEM-reading AVR code.
-// Do our own checks and defines here for good measure...
+// STM    Meaning      DISP
+// ----------------------------
+// PA3 -> nRESET    -> RST
+// PA4 -> NSS (MAN) -> CS
+// PA5 -> SPI1_SCK  -> CLK
+// PA6 -> DATA/CMD  -> RS
+// PA7 -> SPI1_MOSI -> SDI
+// +5v -> BackLight -> LED (This is PWM dimmable)
+// +5v -> Power     -> Vcc
+// GND -> Ground    -> GND
 
 #ifndef pgm_read_byte
  #define pgm_read_byte(addr) (*(const unsigned char *)(addr))
@@ -38,274 +32,78 @@
  #define pgm_read_dword(addr) (*(const unsigned long *)(addr))
 #endif
 
-// Pointers are a peculiar case...typically 16-bit on AVR boards,
-// 32 bits elsewhere.  Try to accommodate both...
-
-#if !defined(__INT_MAX__) || (__INT_MAX__ > 0xFFFF)
- #define pgm_read_pointer(addr) ((void *)pgm_read_dword(addr))
-#else
- #define pgm_read_pointer(addr) ((void *)pgm_read_word(addr))
-#endif
+#define pgm_read_pointer(addr) ((void *)pgm_read_word(addr))
 
 // Control pins
+#define SPI_DC_HIGH()           GPIOA->ODR |=  _rs //digitalWrite(_rs, HIGH)
+#define SPI_DC_LOW()            GPIOA->ODR &= ~_rs //digitalWrite(_rs, LOW)
+#define SPI_CS_HIGH()           GPIOA->ODR |=  _cs //digitalWrite(_cs, HIGH)
+#define SPI_CS_LOW()            GPIOA->ODR &= ~_cs //digitalWrite(_cs, LOW)
 
-#ifdef USE_FAST_PINIO
-    #define SPI_DC_HIGH()           *dcport |=  dcpinmask
-    #define SPI_DC_LOW()            *dcport &= ~dcpinmask
-    #define SPI_CS_HIGH()           *csport |=  cspinmask
-    #define SPI_CS_LOW()            *csport &= ~cspinmask
-#else
-    #define SPI_DC_HIGH()           digitalWrite(_rs, HIGH)
-    #define SPI_DC_LOW()            digitalWrite(_rs, LOW)
-    #define SPI_CS_HIGH()           digitalWrite(_cs, HIGH)
-    #define SPI_CS_LOW()            digitalWrite(_cs, LOW)
-#endif
+//Software SPI Macros
+#define SSPI_MOSI_HIGH()        GPIOA->ODR |=  _sdi //digitalWrite(_sdi, HIGH)
+#define SSPI_MOSI_LOW()         GPIOA->ODR &= ~_sdi //digitalWrite(_sdi, LOW)
+#define SSPI_SCK_HIGH()         GPIOA->ODR |=  _sdi //digitalWrite(_clk, HIGH)
+#define SSPI_SCK_LOW()          GPIOA->ODR &= ~_sdi //digitalWrite(_clk, LOW)
 
-// Software SPI Macros
+// Simple Constructor
+TFT_22_ILI9225::TFT_22_ILI9225() {
+    // STM    Meaning      DISP
+    // ----------------------------
+    // PA3 -> nRESET    -> RST
+    // PA4 -> NSS (MAN) -> CS
+    // PA5 -> SPI1_SCK  -> CLK
+    // PA6 -> DATA/CMD  -> RS
+    // PA7 -> SPI1_MOSI -> SDI
+    // +5v -> BackLight -> LED (This is PWM dimmable, but not implemented in this library)
+    // +5v -> Power     -> Vcc
+    // GND -> Ground    -> GND
 
-#ifdef USE_FAST_PINIO
-    #define SSPI_MOSI_HIGH()        *mosiport |=  mosipinmask
-    #define SSPI_MOSI_LOW()         *mosiport &= ~mosipinmask
-    #define SSPI_SCK_HIGH()         *clkport |=  clkpinmask
-    #define SSPI_SCK_LOW()          *clkport &= ~clkpinmask
-#else
-    #define SSPI_MOSI_HIGH()        digitalWrite(_sdi, HIGH)
-    #define SSPI_MOSI_LOW()         digitalWrite(_sdi, LOW)
-    #define SSPI_SCK_HIGH()         digitalWrite(_clk, HIGH)
-    #define SSPI_SCK_LOW()          digitalWrite(_clk, LOW)
-#endif
+    _rst  = GPIO_ODR_3;
+    _rs   = GPIO_ODR_6;
+    _cs   = GPIO_ODR_4;
+    _sdi  = GPIO_ODR_7;
+    _clk  = GPIO_ODR_5;
+    _led  = 0; // This library does not use LED backlight control at the moment
 
-#define SSPI_BEGIN_TRANSACTION()
-#define SSPI_END_TRANSACTION()
-#define SSPI_WRITE(v)           _spiWrite(v)
-#define SSPI_WRITE16(s)         SSPI_WRITE((s) >> 8); SSPI_WRITE(s)
-#define SSPI_WRITE32(l)         SSPI_WRITE((l) >> 24); SSPI_WRITE((l) >> 16); SSPI_WRITE((l) >> 8); SSPI_WRITE(l)
-#define SSPI_WRITE_PIXELS(c,l)  for(uint32_t i=0; i<(l); i+=2){ SSPI_WRITE(((uint8_t*)(c))[i+1]); SSPI_WRITE(((uint8_t*)(c))[i]); }
+    // Enable GPIO Port A clock
+    RCC->AHBENR |= RCC_AHBENR_GPIOAEN;
 
-// Hardware SPI Macros
-#ifndef ESP32
-    #ifdef SPI_CHANNEL
-        extern SPIClass SPI_CHANNEL; 
-        #define SPI_OBJECT  SPI_CHANNEL
-    #else
-        #define SPI_OBJECT  SPI
-    #endif
-#else
-    #define SPI_OBJECT  _spi
-#endif
+    // Set Pins PA3 PA4 PA5 PA6 PA7 to Output
+    GPIOA->MODER &= ~0x0000ffc0;
+    GPIOA->MODER |=  0x00005540;
 
-#if defined (__AVR__) || defined(TEENSYDUINO) || defined(ARDUINO_ARCH_STM32F1)
-    #define HSPI_SET_CLOCK() SPI_OBJECT.setClockDivider(SPI_CLOCK_DIV2);
-#elif defined (__arm__)
-    #define HSPI_SET_CLOCK() SPI_OBJECT.setClockDivider(11);
-#elif defined(ESP8266) || defined(ESP32)
-    #define HSPI_SET_CLOCK() SPI_OBJECT.setFrequency(SPI_DEFAULT_FREQ);
-#elif defined(RASPI)
-    #define HSPI_SET_CLOCK() SPI_OBJECT.setClock(SPI_DEFAULT_FREQ);
-#elif defined(ARDUINO_ARCH_STM32F1)
-    #define HSPI_SET_CLOCK() SPI_OBJECT.setClock(SPI_DEFAULT_FREQ);
-#else
-    #define HSPI_SET_CLOCK()
-#endif
+    // Set Clock to HIGH for IDLE state
+    GPIOA->ODR |= GPIO_ODR_5;
 
-#ifdef SPI_HAS_TRANSACTION
-    #define HSPI_BEGIN_TRANSACTION() SPI_OBJECT.beginTransaction(SPISettings(SPI_DEFAULT_FREQ, MSBFIRST, SPI_MODE0))
-    #define HSPI_END_TRANSACTION()   SPI_OBJECT.endTransaction()
-#else
-    #define HSPI_BEGIN_TRANSACTION() HSPI_SET_CLOCK(); SPI_OBJECT.setBitOrder(MSBFIRST); SPI_OBJECT.setDataMode(SPI_MODE0)
-    #define HSPI_END_TRANSACTION()
-#endif
+    // Pull SS high
+    GPIOA->ODR |= GPIO_ODR_4;
 
-#ifdef ESP32
-    #define SPI_HAS_WRITE_PIXELS
-#endif
-#if defined(ESP8266) || defined(ESP32)
-    // Optimized SPI (ESP8266 and ESP32)
-    #define HSPI_READ()              SPI_OBJECT.transfer(0)
-    #define HSPI_WRITE(b)            SPI_OBJECT.write(b)
-    #define HSPI_WRITE16(s)          SPI_OBJECT.write16(s)
-    #define HSPI_WRITE32(l)          SPI_OBJECT.write32(l)
-    #ifdef SPI_HAS_WRITE_PIXELS
-        #define SPI_MAX_PIXELS_AT_ONCE  32
-        #define HSPI_WRITE_PIXELS(c,l)   SPI_OBJECT.writePixels(c,l)
-    #else
-        #define HSPI_WRITE_PIXELS(c,l)   for(uint32_t i=0; i<((l)/2); i++){ SPI_WRITE16(((uint16_t*)(c))[i]); }
-    #endif
-#elif defined ( __STM32F1__ )
-    #define HSPI_WRITE(b)            SPI_OBJECT.write(b)
-    #define HSPI_WRITE16(s)          SPI_OBJECT.write16(s)
+    // pull RS low
+    GPIOA->ODR &= ~GPIO_ODR_6;
 
-#else
-    // Standard Byte-by-Byte SPI
+    // Set orientation
+    _orientation = 0; // 0=portrait, 1=right rotated landscape, 2=reverse portrait, 3=left rotated landscape
 
-    #if defined (__AVR__) || defined(TEENSYDUINO)
-    static inline uint8_t _avr_spi_read(void) __attribute__((always_inline));
-    static inline uint8_t _avr_spi_read(void) {
-        uint8_t r = 0;
-        SPDR = r;
-        while(!(SPSR & _BV(SPIF)));
-        r = SPDR;
-        return r;
-    }
-        #define HSPI_WRITE(b)        {SPDR = (b); while(!(SPSR & _BV(SPIF)));}
-        // #define HSPI_READ()          _avr_spi_read()
-    #else
-        #define HSPI_WRITE(b)        SPI_OBJECT.transfer((uint8_t)(b))
-        // #define HSPI_READ()          HSPI_WRITE(0)
-    #endif
-    // #define HSPI_WRITE16(s)          HSPI_WRITE((s) >> 8); HSPI_WRITE(s)
-    // #define HSPI_WRITE32(l)          HSPI_WRITE((l) >> 24); HSPI_WRITE((l) >> 16); HSPI_WRITE((l) >> 8); HSPI_WRITE(l)
-    // #define HSPI_WRITE_PIXELS(c,l)   for(uint32_t i=0; i<(l); i+=2){ HSPI_WRITE(((uint8_t*)(c))[i+1]); HSPI_WRITE(((uint8_t*)(c))[i]); }
-#endif
+    // Set gfxFont to NULL for now
+    //gfxFont = NULL;
 
-// Final SPI Macros
+    // Set maxX and maxY
+    _maxX = maxX();
+    _maxY = maxY();
 
-#if defined (ARDUINO_ARCH_ARC32)
-    #define SPI_DEFAULT_FREQ         16000000
-#elif defined (__AVR__) || defined(TEENSYDUINO)
-    #define SPI_DEFAULT_FREQ         8000000
-#elif defined(ESP8266) || defined(ESP32)
-    #define SPI_DEFAULT_FREQ         40000000
-#elif defined(RASPI)
-    #define SPI_DEFAULT_FREQ         80000000
-#elif defined(ARDUINO_ARCH_STM32F1)
-    #define SPI_DEFAULT_FREQ         18000000
-    //#define SPI_DEFAULT_FREQ         36000000
-#else
-    #define SPI_DEFAULT_FREQ         24000000
-#endif
-
-#define SPI_BEGIN()             if(_clk < 0){SPI_OBJECT.begin();}
-#define SPI_BEGIN_TRANSACTION() if(_clk < 0){HSPI_BEGIN_TRANSACTION();}
-#define SPI_END_TRANSACTION()   if(_clk < 0){HSPI_END_TRANSACTION();}
-// #define SPI_WRITE16(s)          if(_clk < 0){HSPI_WRITE16(s);}else{SSPI_WRITE16(s);}
-// #define SPI_WRITE32(l)          if(_clk < 0){HSPI_WRITE32(l);}else{SSPI_WRITE32(l);}
-// #define SPI_WRITE_PIXELS(c,l)   if(_clk < 0){HSPI_WRITE_PIXELS(c,l);}else{SSPI_WRITE_PIXELS(c,l);}
-
-// Constructor when using software SPI.  All output pins are configurable.
-TFT_22_ILI9225::TFT_22_ILI9225(int8_t rst, int8_t rs, int8_t cs, int8_t sdi, int8_t clk, int8_t led) {
-    _rst  = rst;
-    _rs   = rs;
-    _cs   = cs;
-    _sdi  = sdi;
-    _clk  = clk;
-    _led  = led;
-    _brightness = 255; // Set to maximum brightness
-    hwSPI = false;
-    writeFunctionLevel = 0;
-    gfxFont = NULL;
+    // Set Background color
+    _bgColor = COLOR_BLACK;
 }
 
-// Constructor when using software SPI.  All output pins are configurable. Adds backlight brightness 0-255
-TFT_22_ILI9225::TFT_22_ILI9225(int8_t rst, int8_t rs, int8_t cs, int8_t sdi, int8_t clk, int8_t led, uint8_t brightness) {
-    _rst  = rst;
-    _rs   = rs;
-    _cs   = cs;
-    _sdi  = sdi;
-    _clk  = clk;
-    _led  = led;
-    _brightness = brightness;
-    hwSPI = false;
-    writeFunctionLevel = 0;
-    gfxFont = NULL;
-}
-
-// Constructor when using hardware SPI.  Faster, but must use SPI pins
-// specific to each board type (e.g. 11,13 for Uno, 51,52 for Mega, etc.)
-TFT_22_ILI9225::TFT_22_ILI9225(int8_t rst, int8_t rs, int8_t cs, int8_t led) {
-    _rst  = rst;
-    _rs   = rs;
-    _cs   = cs;
-    _sdi  = _clk = -1;
-    _led  = led;
-    _brightness = 255; // Set to maximum brightness
-    hwSPI = true;
-    writeFunctionLevel = 0;
-    gfxFont = NULL;
-}
-
-// Constructor when using hardware SPI.  Faster, but must use SPI pins
-// specific to each board type (e.g. 11,13 for Uno, 51,52 for Mega, etc.)
-// Adds backlight brightness 0-255
-TFT_22_ILI9225::TFT_22_ILI9225(int8_t rst, int8_t rs, int8_t cs, int8_t led, uint8_t brightness) {
-    _rst  = rst;
-    _rs   = rs;
-    _cs   = cs;
-    _sdi  = _clk = -1;
-    _led  = led;
-    _brightness = brightness;
-    hwSPI = true;
-    writeFunctionLevel = 0;
-    gfxFont = NULL;
-}
-
- 
-#ifdef ESP32
-void TFT_22_ILI9225::begin(SPIClass &spi)
-#else
-void TFT_22_ILI9225::begin()
-#endif
-{
-#ifdef ESP32
-    _spi = spi;
-#endif
-    // Set up reset pin
-    if (_rst > 0) {
-        pinMode(_rst, OUTPUT);
-        digitalWrite(_rst, LOW);
-    }
-   // Set up backlight pin, turn off initially
-    if (_led > 0) {
-        pinMode(_led, OUTPUT);
-        setBacklight(false);
-    }
-
-    // Control pins
-    pinMode(_rs, OUTPUT);
-    digitalWrite(_rs, LOW);
-    pinMode(_cs, OUTPUT);
-    digitalWrite(_cs, HIGH);
-
-    #ifdef USE_FAST_PINIO
-    csport    = portOutputRegister(digitalPinToPort(_cs));
-    cspinmask = digitalPinToBitMask(_cs);
-    dcport    = portOutputRegister(digitalPinToPort(_rs));
-    dcpinmask = digitalPinToBitMask(_rs);
-#endif
-
-    // Software SPI
-    if(_clk >= 0){
-        pinMode(_sdi, OUTPUT);
-        digitalWrite(_sdi, LOW);
-        pinMode(_clk, OUTPUT);
-        digitalWrite(_clk, HIGH);
-#ifdef USE_FAST_PINIO
-        clkport     = portOutputRegister(digitalPinToPort(_clk));
-        clkpinmask  = digitalPinToBitMask(_clk);
-        mosiport    = portOutputRegister(digitalPinToPort(_sdi));
-        mosipinmask = digitalPinToBitMask(_sdi);
-        SSPI_SCK_LOW();
-        SSPI_MOSI_LOW();
-    } else {
-        clkport     = 0;
-        clkpinmask  = 0;
-        mosiport    = 0;
-        mosipinmask = 0;
-#endif
-    }
-
-    // Hardware SPI
-    SPI_BEGIN();
-
-    // Initialization Code
-    if (_rst > 0) {
-        digitalWrite(_rst, HIGH); // Pull the reset pin high to release the ILI9225C from the reset status
-        delay(1); 
-        digitalWrite(_rst, LOW); // Pull the reset pin low to reset ILI9225
-        delay(10);
-        digitalWrite(_rst, HIGH); // Pull the reset pin high to release the ILI9225C from the reset status
-        delay(50);
-    }
+void TFT_22_ILI9225::begin() {
+    // Initialization Code -- Power ON RESET
+    GPIOA->ODR |= GPIO_ODR_3; // Pull the reset pin high to release the ILI9225C from the reset status
+    _delay(1);
+    GPIOA->ODR &= ~GPIO_ODR_3;  // Pull the reset pin low to reset ILI9225
+    _delay(10);
+    GPIOA->ODR |= GPIO_ODR_3;  // Pull the reset pin high to release the ILI9225C from the reset status
+    _delay(50);
 
     /* Start Initial Sequence */
 
@@ -317,7 +115,7 @@ void TFT_22_ILI9225::begin()
     _writeRegister(ILI9225_POWER_CTRL4, 0x0000); // Set GVDD
     _writeRegister(ILI9225_POWER_CTRL5, 0x0000); // Set VCOMH/VCOML voltage
     endWrite();
-    delay(40); 
+    _delay(40);
 
     // Power-on sequence
     startWrite();
@@ -327,11 +125,11 @@ void TFT_22_ILI9225::begin()
     _writeRegister(ILI9225_POWER_CTRL5, 0x495F); // Set VCOMH/VCOML voltage
     _writeRegister(ILI9225_POWER_CTRL1, 0x0800); // Set SAP,DSTB,STB
     endWrite();
-    delay(10);
+    _delay(10);
     startWrite();
     _writeRegister(ILI9225_POWER_CTRL2, 0x103B); // Set APON,PON,AON,VCI1EN,VC
     endWrite();
-    delay(50);
+    _delay(50);
 
     startWrite();
     _writeRegister(ILI9225_DRIVER_OUTPUT_CTRL, 0x011C); // set the display line number and display direction
@@ -372,39 +170,72 @@ void TFT_22_ILI9225::begin()
 
     _writeRegister(ILI9225_DISP_CTRL1, 0x0012); 
     endWrite();
-    delay(50); 
+    _delay(50);
     startWrite();
     _writeRegister(ILI9225_DISP_CTRL1, 0x1017);
     endWrite();
 
     // Turn on backlight
-    setBacklight(true);
+    setBacklight(true); // does nothing right now...
     setOrientation(0);
 
     // Initialize variables
-    setBackgroundColor( COLOR_BLACK );
+    setBackgroundColor(COLOR_BLACK);
 
     clear();
 }
 
+// ----------------------------------------------------------------------------
+// Functions added for STM32F0 Port
+// ----------------------------------------------------------------------------
 
-void TFT_22_ILI9225::_spiWrite(uint8_t b) {
-    if(_clk < 0){
-        HSPI_WRITE(b);
-        return;
-    }
-    // Fast SPI bitbang swiped from LPD8806 library
-    for(uint8_t bit = 0x80; bit; bit >>= 1){
-        if((b) & bit){
-            SSPI_MOSI_HIGH();
-        } else {
-            SSPI_MOSI_LOW();
-        }
-        SSPI_SCK_HIGH();
-        SSPI_SCK_LOW();
-    }
+void TFT_22_ILI9225::_delay(unsigned int ms) {
+    _nano_wait(ms * 1000000);
 }
 
+void TFT_22_ILI9225::_nano_wait(unsigned int ns) {
+    // Taken from Purdue ECE362 course materials
+    asm(    "        mov r0,%0\n"
+            "repeat: sub r0,#83\n"
+            "        bgt repeat\n" : : "r"(ns) : "r0", "cc");
+}
+
+uint16_t TFT_22_ILI9225::_min(uint16_t a, uint16_t b) {
+    return a > b ? b : a;
+}
+
+uint16_t TFT_22_ILI9225::_abs(int16_t a) {
+    // If a is less than zero, flip all the bits and add one.
+    return a < 0 ? (uint16_t) ~a + 1 : a;
+}
+
+int TFT_22_ILI9225::_strlen(STRING str) {
+    int i;
+    for (i = 0; str[i] != '\0'; i++) ;
+    return i;
+}
+
+int TFT_22_ILI9225::_bitRead(uint8_t byte, int k) {
+    return (byte >> k) & 0x1;
+}
+
+// ----------------------------------------------------------------------------
+// END of new functions
+// ----------------------------------------------------------------------------
+
+void TFT_22_ILI9225::_spiWrite(uint8_t b) {
+    for (uint8_t bit = 0x80; bit; bit >>= 1) {
+        if (b & bit) {
+            // Data is 1, set MOSI to high
+            GPIOA->ODR |= _sdi;
+        } else {
+            // Data is 0, set MOSI to low
+            GPIOA->ODR &= ~_sdi;
+        }
+        GPIOA->ODR |=  _clk;
+        GPIOA->ODR &= ~_clk;
+    }
+}
 
 void TFT_22_ILI9225::_spiWriteCommand(uint8_t c) {
     SPI_DC_LOW();
@@ -448,10 +279,10 @@ void TFT_22_ILI9225::_setWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t 
 void TFT_22_ILI9225::_setWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, autoIncMode_t mode) {
     DB_PRINT( "setWindows( x0=%d, y0=%d, x1=%d, y1=%d, mode=%d", x0,y0,x1,y1,mode );
     // clip to TFT-Dimensions
-    x0 = min( x0, (uint16_t) (_maxX-1) );
-    x1 = min( x1, (uint16_t) (_maxX-1) );
-    y0 = min( y0, (uint16_t) (_maxY-1) );
-    y1 = min( y1, (uint16_t) (_maxY-1) );
+    x0 = _min( x0, (uint16_t) (_maxX-1) );
+    x1 = _min( x1, (uint16_t) (_maxX-1) );
+    y0 = _min( y0, (uint16_t) (_maxY-1) );
+    y1 = _min( y1, (uint16_t) (_maxY-1) );
     _orientCoordinates(x0, y0);
     _orientCoordinates(x1, y1);
 
@@ -511,7 +342,7 @@ void TFT_22_ILI9225::clear() {
     setOrientation(0);
     fillRectangle(0, 0, _maxX - 1, _maxY - 1, COLOR_BLACK);
     setOrientation(old);
-    delay(10);
+    _delay(10);
 }
 
 
@@ -524,14 +355,14 @@ void TFT_22_ILI9225::invert(boolean flag) {
 
 
 void TFT_22_ILI9225::setBacklight(boolean flag) {
+    // THIS FUNCTION DOES NOTHING AT THE MOMENT
     blState = flag;
-#ifndef ESP32
-    if (_led) analogWrite(_led, blState ? _brightness : 0);
-#endif
+    // Update PWM duty cycle (based on _brightness) of LED pin on display here if you want to implement LED control.
 }
 
 
 void TFT_22_ILI9225::setBacklightBrightness(uint8_t brightness) {
+    // THIS FUNCTION DOES NOTHING AT THE MOMENT
     _brightness = brightness;
     setBacklight(blState);
 }
@@ -543,21 +374,21 @@ void TFT_22_ILI9225::setDisplay(boolean flag) {
         _writeRegister(0x00ff, 0x0000);
         _writeRegister(ILI9225_POWER_CTRL1, 0x0000);
         endWrite();
-        delay(50);
+        _delay(50);
         startWrite();
         _writeRegister(ILI9225_DISP_CTRL1, 0x1017);
         endWrite();
-        delay(200);
+        _delay(200);
     } else {
         startWrite();
         _writeRegister(0x00ff, 0x0000);
         _writeRegister(ILI9225_DISP_CTRL1, 0x0000);
         endWrite();
-        delay(50);
+        _delay(50);
         startWrite();
         _writeRegister(ILI9225_POWER_CTRL1, 0x0003);
         endWrite();
-        delay(200);
+        _delay(200);
     }
 }
 
@@ -685,7 +516,7 @@ void TFT_22_ILI9225::fillCircle(uint8_t x0, uint8_t y0, uint8_t radius, uint16_t
 void TFT_22_ILI9225::drawLine(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2, uint16_t color) {
 
     // Classic Bresenham algorithm
-    int16_t steep = abs((int16_t)(y2 - y1)) > abs((int16_t)(x2 - x1));
+    int16_t steep = _abs((int16_t)(y2 - y1)) > _abs((int16_t)(x2 - x1));
 
     int16_t dx, dy;
 
@@ -700,7 +531,7 @@ void TFT_22_ILI9225::drawLine(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2
     }
 
     dx = x2 - x1;
-    dy = abs((int16_t)(y2 - y1));
+    dy = _abs((int16_t)(y2 - y1));
 
     int16_t err = dx / 2;
     int16_t ystep;
@@ -724,16 +555,8 @@ void TFT_22_ILI9225::drawLine(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2
 
 
 void TFT_22_ILI9225::drawPixel(uint16_t x1, uint16_t y1, uint16_t color) {
-
     if((x1 >= _maxX) || (y1 >= _maxY)) return;
-/*
-    _setWindow(x1, y1, x1+1, y1+1);
-    _orientCoordinates(x1, y1);
-    startWrite();
-    //_writeData(color >> 8, color);
-    _writeData16(color);
-    endWrite();
-*/
+
     _orientCoordinates(x1, y1);
     startWrite();
     _writeRegister(ILI9225_RAM_ADDR_SET1,x1);
@@ -741,9 +564,6 @@ void TFT_22_ILI9225::drawPixel(uint16_t x1, uint16_t y1, uint16_t color) {
     _writeRegister(ILI9225_GRAM_DATA_REG,color);
     
     endWrite();
-
-
-
 }
 
 
@@ -777,96 +597,26 @@ void TFT_22_ILI9225::_swap(uint16_t &a, uint16_t &b) {
     b = w;
 }
 
-// Utilities
-/*void TFT_22_ILI9225::_writeCommand16(uint16_t command) {
-# ifdef HSPI_WRITE16
-    SPI_DC_LOW();
-    SPI_CS_LOW();
-    HSPI_WRITE16(command);
-    SPI_CS_HIGH();
-#else 
-    _spiWriteCommand(command >> 8);
-    _spiWriteCommand(0x00ff & command);
-#endif
-}
-
-void TFT_22_ILI9225::_writeData16(uint16_t data) {
-# ifdef HSPI_WRITE16
-    SPI_DC_HIGH();
-    SPI_CS_LOW();
-    HSPI_WRITE16(data);
-    SPI_CS_HIGH();
-#else 
-    _spiWriteData(data >> 8);
-    _spiWriteData(0x00ff & data);
-#endif
-}
-*/
 void TFT_22_ILI9225::_writeCommand16(uint16_t command) {
     SPI_DC_LOW();
     SPI_CS_LOW();
-    if ( _clk < 0 ) {
-        # ifdef HSPI_WRITE16
-        HSPI_WRITE16(command);
-    #else 
-        HSPI_WRITE(command >> 8);
-        HSPI_WRITE(0x00ff & command);
-    #endif
-    } else {
-        // Fast SPI bitbang swiped from LPD8806 library
-        for(uint16_t bit = 0x8000; bit; bit >>= 1){
-            if((command) & bit){
-                SSPI_MOSI_HIGH();
-            } else {
-                SSPI_MOSI_LOW();
-            }
-            SSPI_SCK_HIGH();
-            SSPI_SCK_LOW();
-        }
-    }
+    _spiWrite((uint8_t) (command >> 8));
+    _spiWrite((uint8_t) command); // was 0x00ff & command, but this is not necessary
     SPI_CS_HIGH();
 }
 
 void TFT_22_ILI9225::_writeData16(uint16_t data) {
     SPI_DC_HIGH();
     SPI_CS_LOW();
-    if ( _clk < 0 ) {
-        # ifdef HSPI_WRITE16
-            HSPI_WRITE16(data);
-        #else 
-            HSPI_WRITE(data >> 8);
-            HSPI_WRITE(0x00ff & data);
-        #endif
-    } else {
-        // Fast SPI bitbang swiped from LPD8806 library
-        for(uint16_t bit = 0x8000; bit; bit >>= 1){
-            if((data) & bit){
-                SSPI_MOSI_HIGH();
-            } else {
-                SSPI_MOSI_LOW();
-            }
-            SSPI_SCK_HIGH();
-            SSPI_SCK_LOW();
-        }
-    }
+    _spiWrite((uint8_t) (data >> 8));
+    _spiWrite((uint8_t) data); // was 0x00ff & command, but this is not necessary
     SPI_CS_HIGH();
 }
-/*void TFT_22_ILI9225::_writeData(uint8_t HI, uint8_t LO) {
-    _spiWriteData(HI);
-    _spiWriteData(LO);
-}
-
-void TFT_22_ILI9225::_writeCommand(uint8_t HI, uint8_t LO) {
-    _spiWriteCommand(HI);
-    _spiWriteCommand(LO);
-}*/
-
 
 void TFT_22_ILI9225::_writeRegister(uint16_t reg, uint16_t data) {
     _writeCommand16(reg);
     _writeData16(data);
 }
-
 
 void TFT_22_ILI9225::drawTriangle(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2, uint16_t x3, uint16_t y3, uint16_t color) {
     startWrite();
@@ -875,7 +625,6 @@ void TFT_22_ILI9225::drawTriangle(uint16_t x1, uint16_t y1, uint16_t x2, uint16_
     drawLine(x3, y3, x1, y1, color);
     endWrite();
 }
-
 
 void TFT_22_ILI9225::fillTriangle(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2, uint16_t x3, uint16_t y3, uint16_t color) {
 
@@ -980,15 +729,9 @@ uint16_t TFT_22_ILI9225::drawText(uint16_t x, uint16_t y, STRING s, uint16_t col
     uint16_t currx = x;
 
     // Print every character in string
-    #ifdef USE_STRING_CLASS
-    for (uint8_t k = 0; k < s.length(); k++) {
-        currx += drawChar(currx, y, s.charAt(k), color) + 1;
-    }
-    #else
-    for (uint8_t k = 0; k < strlen(s); k++) {
+    for (uint8_t k = 0; k < _strlen(s); k++) {
         currx += drawChar(currx, y, s[k], color) + 1;
     }
-    #endif
     return currx;
 }
 
@@ -996,15 +739,9 @@ uint16_t TFT_22_ILI9225::getTextWidth( STRING s ) {
 
     uint16_t width = 0;
     // Count every character in string ( +1 for spacing )
-    #ifdef USE_STRING_CLASS
-    for (uint8_t k = 0; k < s.length(); k++) {
-        width += getCharWidth(s.charAt(k) ) + 1;
-    }
-    #else
-    for (uint8_t k = 0; k < strlen(s); k++) {
+    for (uint8_t k = 0; k < _strlen(s); k++) {
         width += getCharWidth(s[k]) + 1;
     }
-    #endif
     return width;
 }
 
@@ -1037,8 +774,8 @@ uint16_t TFT_22_ILI9225::drawChar(uint16_t x, uint16_t y, uint16_t ch, uint16_t 
             // Process every row in font character
             for (uint8_t k = 0; k < 8; k++) {
                 if (h >= cfont.height ) break;  // No need to process excess bits
-                if (fastMode ) _writeData16( bitRead(charData, k)?color:_bgColor );
-                else drawPixel( x + i, y + (j * 8) + k, bitRead(charData, k)?color:_bgColor );
+                if (fastMode ) _writeData16( _bitRead(charData, k) ? color : _bgColor );
+                else drawPixel( x + i, y + (j * 8) + k, _bitRead(charData, k) ? color : _bgColor );
                 h++;
             }
         }
@@ -1201,7 +938,7 @@ uint16_t** bitmap, int16_t w, int16_t h) {
 
 void TFT_22_ILI9225::startWrite(void){
     if (writeFunctionLevel++ == 0) {
-        SPI_BEGIN_TRANSACTION();
+        //SPI_BEGIN_TRANSACTION(); //TODO: Confirm that this is not necessary
         SPI_CS_LOW();
     }
 }
@@ -1210,103 +947,105 @@ void TFT_22_ILI9225::startWrite(void){
 void TFT_22_ILI9225::endWrite(void){
     if (--writeFunctionLevel == 0) {
         SPI_CS_HIGH();
-        SPI_END_TRANSACTION();
+        //SPI_END_TRANSACTION(); //TODO: Confirm that this is not necessary
     }
 }
 
 
 // TEXT- AND CHARACTER-HANDLING FUNCTIONS ----------------------------------
 
-void TFT_22_ILI9225::setGFXFont(const GFXfont *f) {
-    gfxFont = (GFXfont *)f;
-}
+// It seems at first glance that GFX fonts are an Arduino thing...
+
+//void TFT_22_ILI9225::setGFXFont(const GFXfont *f) {
+//    gfxFont = (GFXfont *)f;
+//}
 
 
 // Draw a string
-void TFT_22_ILI9225::drawGFXText(int16_t x, int16_t y, STRING s, uint16_t color) {
-
-    int16_t currx = x;
-
-    if(gfxFont) {
-        // Print every character in string
-        #ifdef USE_STRING_CLASS
-        for (uint8_t k = 0; k < s.length(); k++) {
-            currx += drawGFXChar(currx, y, s.charAt(k), color) + 1;
-        }
-        #else
-        for (uint8_t k = 0; k < strlen(s); k++) {
-            currx += drawGFXChar(currx, y, s[k], color) + 1;
-        }
-        #endif
-    }
-}
+//void TFT_22_ILI9225::drawGFXText(int16_t x, int16_t y, STRING s, uint16_t color) {
+//
+//    int16_t currx = x;
+//
+//    if(gfxFont) {
+//        // Print every character in string
+//        #ifdef USE_STRING_CLASS
+//        for (uint8_t k = 0; k < s.length(); k++) {
+//            currx += drawGFXChar(currx, y, s.charAt(k), color) + 1;
+//        }
+//        #else
+//        for (uint8_t k = 0; k < strlen(s); k++) {
+//            currx += drawGFXChar(currx, y, s[k], color) + 1;
+//        }
+//        #endif
+//    }
+//}
 
 
 // Draw a character
-uint16_t TFT_22_ILI9225::drawGFXChar(int16_t x, int16_t y, unsigned char c, uint16_t color) {
-
-    c -= (uint8_t)pgm_read_byte(&gfxFont->first);
-    GFXglyph *glyph  = &(((GFXglyph *)pgm_read_pointer(&gfxFont->glyph))[c]);
-    uint8_t  *bitmap = (uint8_t *)pgm_read_pointer(&gfxFont->bitmap);
-
-    uint16_t bo = pgm_read_word(&glyph->bitmapOffset);
-    uint8_t  w  = pgm_read_byte(&glyph->width),
-             h  = pgm_read_byte(&glyph->height),
-             xa = pgm_read_byte(&glyph->xAdvance);
-    int8_t   xo = pgm_read_byte(&glyph->xOffset),
-             yo = pgm_read_byte(&glyph->yOffset);
-    uint8_t  xx, yy, bits = 0, bit = 0;
-
-    // Add character clipping here one day
-
-    startWrite();
-    for(yy=0; yy<h; yy++) {
-        for(xx=0; xx<w; xx++) {
-            if(!(bit++ & 7)) {
-                bits = pgm_read_byte(&bitmap[bo++]);
-            }
-            if(bits & 0x80) {
-                drawPixel(x+xo+xx, y+yo+yy, color);
-            }
-            bits <<= 1;
-        }
-    }
-    endWrite();
-
-    return (uint16_t)xa;
-}
-
-
-void TFT_22_ILI9225::getGFXCharExtent(uint8_t c, int16_t *gw, int16_t *gh, int16_t *xa) {
-    uint8_t first = pgm_read_byte(&gfxFont->first),
-            last  = pgm_read_byte(&gfxFont->last);
-    // Char present in this font?
-    if((c >= first) && (c <= last)) {
-        GFXglyph *glyph = &(((GFXglyph *)pgm_read_pointer(&gfxFont->glyph))[c - first]);
-        *gw = pgm_read_byte(&glyph->width);
-        *gh = pgm_read_byte(&glyph->height);
-        *xa = pgm_read_byte(&glyph->xAdvance);
-        // int8_t  xo = pgm_read_byte(&glyph->xOffset),
-        //         yo = pgm_read_byte(&glyph->yOffset);
-    }
-}
+//uint16_t TFT_22_ILI9225::drawGFXChar(int16_t x, int16_t y, unsigned char c, uint16_t color) {
+//
+//    c -= (uint8_t)pgm_read_byte(&gfxFont->first);
+//    GFXglyph *glyph  = &(((GFXglyph *)pgm_read_pointer(&gfxFont->glyph))[c]);
+//    uint8_t  *bitmap = (uint8_t *)pgm_read_pointer(&gfxFont->bitmap);
+//
+//    uint16_t bo = pgm_read_word(&glyph->bitmapOffset);
+//    uint8_t  w  = pgm_read_byte(&glyph->width),
+//             h  = pgm_read_byte(&glyph->height),
+//             xa = pgm_read_byte(&glyph->xAdvance);
+//    int8_t   xo = pgm_read_byte(&glyph->xOffset),
+//             yo = pgm_read_byte(&glyph->yOffset);
+//    uint8_t  xx, yy, bits = 0, bit = 0;
+//
+//    // Add character clipping here one day
+//
+//    startWrite();
+//    for(yy=0; yy<h; yy++) {
+//        for(xx=0; xx<w; xx++) {
+//            if(!(bit++ & 7)) {
+//                bits = pgm_read_byte(&bitmap[bo++]);
+//            }
+//            if(bits & 0x80) {
+//                drawPixel(x+xo+xx, y+yo+yy, color);
+//            }
+//            bits <<= 1;
+//        }
+//    }
+//    endWrite();
+//
+//    return (uint16_t)xa;
+//}
 
 
-void TFT_22_ILI9225::getGFXTextExtent(STRING str, int16_t x, int16_t y, int16_t *w, int16_t *h) {
-    *w  = *h = 0;
-    #ifdef USE_STRING_CLASS
-    for (uint8_t k = 0; k < str.length(); k++) {
-        uint8_t c = str.charAt(k);
-    #else
-    for (uint8_t k = 0; k < strlen(str); k++) {
-        uint8_t c = str[k];
-    #endif
-        int16_t gw, gh, xa;
-        getGFXCharExtent(c, &gw, &gh, &xa);
-        if(gh > *h) {
-            *h = gh;
-        }
-        *w += xa;
-    }
-}
+//void TFT_22_ILI9225::getGFXCharExtent(uint8_t c, int16_t *gw, int16_t *gh, int16_t *xa) {
+//    uint8_t first = pgm_read_byte(&gfxFont->first),
+//            last  = pgm_read_byte(&gfxFont->last);
+//    // Char present in this font?
+//    if((c >= first) && (c <= last)) {
+//        GFXglyph *glyph = &(((GFXglyph *)pgm_read_pointer(&gfxFont->glyph))[c - first]);
+//        *gw = pgm_read_byte(&glyph->width);
+//        *gh = pgm_read_byte(&glyph->height);
+//        *xa = pgm_read_byte(&glyph->xAdvance);
+//        // int8_t  xo = pgm_read_byte(&glyph->xOffset),
+//        //         yo = pgm_read_byte(&glyph->yOffset);
+//    }
+//}
+
+
+//void TFT_22_ILI9225::getGFXTextExtent(STRING str, int16_t x, int16_t y, int16_t *w, int16_t *h) {
+//    *w  = *h = 0;
+//    #ifdef USE_STRING_CLASS
+//    for (uint8_t k = 0; k < str.length(); k++) {
+//        uint8_t c = str.charAt(k);
+//    #else
+//    for (uint8_t k = 0; k < strlen(str); k++) {
+//        uint8_t c = str[k];
+//    #endif
+//        int16_t gw, gh, xa;
+//        getGFXCharExtent(c, &gw, &gh, &xa);
+//        if(gh > *h) {
+//            *h = gh;
+//        }
+//        *w += xa;
+//    }
+//}
 

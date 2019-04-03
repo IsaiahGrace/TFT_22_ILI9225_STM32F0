@@ -1,34 +1,18 @@
 #ifndef TFT_22_ILI9225_h
 #define TFT_22_ILI9225_h
 
-#ifdef __STM32F1__
-#define ARDUINO_STM32_FEATHER
-#define  PROGMEM
-// if 'SPI_CHANNEL' is not defined, 'SPI' is used, only valid for STM32F1
-//#define SPI_CHANNEL SPI_2
-#endif
+#include <stdint.h>
+//#include <string>
 
-#define USE_STRING_CLASS
+#define boolean bool // not sure why I need this
+#define NULL 0
+
+//#define USE_STRING_CLASS
 
 #ifdef USE_STRING_CLASS
     #define STRING String
 #else
     #define STRING const char *
-#endif
-
-#if ARDUINO >= 100
-    #include "Arduino.h"
-#else
-    #include "WProgram.h"
-#endif
-#include <SPI.h>
-#include "gfxfont.h"
-
-#if defined(ARDUINO_STM32_FEATHER) || defined(ARDUINO_ARCH_STM32) || defined(ARDUINO_ARCH_STM32F1) || defined(STM32F1)
-typedef volatile uint32 RwReg;
-#endif
-#if defined(ARDUINO_FEATHER52)
-typedef volatile uint32_t RwReg;
 #endif
 
 /* ILI9225 screen size */
@@ -125,7 +109,7 @@ enum autoIncMode_t { R2L_BottomUp, BottomUp_R2L, L2R_BottomUp, BottomUp_L2R, R2L
 
 /* Font defines */
 #define FONT_HEADER_SIZE 4 // 1: pixel width of 1 font character, 2: pixel height, 
-#define readFontByte(x) pgm_read_byte(&cfont.font[x])  
+#define readFontByte(x) pgm_read_byte(&cfont.font[x])
 
 extern uint8_t Terminal6x8[];
 extern uint8_t Terminal11x16[];
@@ -144,28 +128,15 @@ struct _currentFont
 };
 #define MONOSPACE   1
 
-#if defined (ARDUINO_STM32_FEATHER)
-    #undef USE_FAST_PINIO
-#elif defined (__AVR__) || defined(TEENSYDUINO) || defined(ESP8266) || defined (ESP32) || defined(__arm__)
-    #define USE_FAST_PINIO
-#endif
-
 /// Main and core class
 class TFT_22_ILI9225 {
 
     public:
 
-        TFT_22_ILI9225(int8_t RST, int8_t RS, int8_t CS, int8_t SDI, int8_t CLK, int8_t LED);
-        TFT_22_ILI9225(int8_t RST, int8_t RS, int8_t CS, int8_t LED);
-        TFT_22_ILI9225(int8_t RST, int8_t RS, int8_t CS, int8_t SDI, int8_t CLK, int8_t LED, uint8_t brightness);
-        TFT_22_ILI9225(int8_t RST, int8_t RS, int8_t CS, int8_t LED, uint8_t brightness);
+        TFT_22_ILI9225();
 
         /// Initialization
-#ifndef ESP32
         void begin(void);
-#else
-        void begin(SPIClass &spi=SPI);
-#endif
 
         /// Clear the screen
         void clear(void); 
@@ -174,11 +145,11 @@ class TFT_22_ILI9225 {
         /// @param     flag true to invert, false for normal screen
         void invert(boolean flag);
 
-        /// Switch backlight on or off
+        /// Switch backlight on or off -- CURRENTLY DOES NOTHING
         /// @param     flag true=on, false=off
         void setBacklight(boolean flag); 
 
-        /// Set backlight brightness
+        /// Set backlight brightness -- CURRENTLY DOES NOTHING
         /// @param     brightness sets backlight brightness 0-255
         void setBacklightBrightness(uint8_t brightness); 
 
@@ -352,14 +323,14 @@ class TFT_22_ILI9225 {
 
         /// Set current GFX font
         /// @param    f GFX font name defined in include file
-        void setGFXFont(const GFXfont *f = NULL);
+        //void setGFXFont(const GFXfont *f = NULL);
 
         /// Draw a string with the current GFX font
         /// @param    x point coordinate, x-axis
         /// @param    y point coordinate, y-axis
         /// @param    s string to print
         /// @param    color 16-bit color
-        void drawGFXText(int16_t x, int16_t y, STRING s, uint16_t color);
+        //void drawGFXText(int16_t x, int16_t y, STRING s, uint16_t color);
         
         /// Get the width & height of a text string with the current GFX font
         /// @param    str string to analyze
@@ -367,7 +338,7 @@ class TFT_22_ILI9225 {
         /// @param    y point coordinate, y-axis
         /// @param    w width in pixels of string 
         /// @param    h height in pixels of string
-        void getGFXTextExtent(STRING str, int16_t x, int16_t y, int16_t *w, int16_t *h);
+        //void getGFXTextExtent(STRING str, int16_t x, int16_t y, int16_t *w, int16_t *h);
         
         /// Draw a single character with the current GFX font
         /// @param    x point coordinate, x-axis
@@ -375,11 +346,20 @@ class TFT_22_ILI9225 {
         /// @param    c character to draw
         /// @param    color 16-bit color
         /// @return   width of character in display pixels
-        uint16_t drawGFXChar(int16_t x, int16_t y, unsigned char c, uint16_t color);
+        //uint16_t drawGFXChar(int16_t x, int16_t y, unsigned char c, uint16_t color);
 
 
     private:
 
+        // New functions for the STM32F0 port
+        void _delay(unsigned int ms);
+        void _nano_wait(unsigned int ns);
+        uint16_t _min(uint16_t a, uint16_t b);
+        uint16_t _abs(int16_t a);
+        int _strlen(STRING str);
+        int _bitRead(uint8_t byte, int k);
+
+        // Old functions from original library
         void _spiWrite(uint8_t v);
         void _spiWriteCommand(uint8_t c);
         void _spiWriteData(uint8_t d);
@@ -396,33 +376,14 @@ class TFT_22_ILI9225 {
         void _writeData16(uint16_t HILO);
         void _writeCommand(uint8_t HI, uint8_t LO);
         void _writeCommand16(uint16_t HILO);
+
         uint16_t _maxX, _maxY, _bgColor;
-
-#if defined (__AVR__) || defined(TEENSYDUINO)
-        int8_t  _rst, _rs, _cs, _sdi, _clk, _led;
-    #ifdef USE_FAST_PINIO
-        volatile uint8_t *mosiport, *clkport, *dcport, *rsport, *csport;
-        uint8_t  mosipinmask, clkpinmask, cspinmask, dcpinmask;
-    #endif
-#elif defined (__arm__)
         int32_t  _rst, _rs, _cs, _sdi, _clk, _led;
-    #ifdef USE_FAST_PINIO
-        volatile RwReg *mosiport, *clkport, *dcport, *rsport, *csport;
-        uint32_t  mosipinmask, clkpinmask, cspinmask, dcpinmask;
-    #endif
-#elif defined (ESP8266) || defined (ESP32)
-        int8_t  _rst, _rs, _cs, _sdi, _clk, _led;
-    #ifdef USE_FAST_PINIO
-        volatile uint32_t *mosiport, *clkport, *dcport, *rsport, *csport;
-        uint32_t  mosipinmask, clkpinmask, cspinmask, dcpinmask;
-    #endif
-#else
-        int8_t  _rst, _rs, _cs, _sdi, _clk, _led;
-#endif
 
-        uint8_t  _orientation, _brightness;
+        uint8_t _orientation;
+        uint8_t _brightness;
         
-        // correspondig modes if orientation changed:
+        // Corresponding modes if orientation changed:
         const autoIncMode_t modeTab [3][8] = {
         //          { R2L_BottomUp, BottomUp_R2L, L2R_BottomUp, BottomUp_L2R, R2L_TopDown,  TopDown_R2L,  L2R_TopDown,  TopDown_L2R }//
         /* 90° */   { BottomUp_L2R, L2R_BottomUp, TopDown_L2R,  L2R_TopDown,  BottomUp_R2L, R2L_BottomUp, TopDown_R2L,  R2L_TopDown },   
@@ -435,19 +396,15 @@ class TFT_22_ILI9225 {
 
         _currentFont cfont;
 
-#ifdef ESP32
-        SPIClass _spi;
-#endif
-
     protected:
 
         uint32_t writeFunctionLevel;
         void startWrite(void);
         void endWrite(void);
 
-        void getGFXCharExtent(uint8_t c, int16_t *gw, int16_t *gh, int16_t *xa);
+        //void getGFXCharExtent(uint8_t c, int16_t *gw, int16_t *gh, int16_t *xa);
         
-        GFXfont *gfxFont;
+        //GFXfont *gfxFont;
 };
 
 #endif
